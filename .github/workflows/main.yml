@@ -1,0 +1,156 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+permissions:
+    contents: read
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run Linters
+              run: npm run lint
+    unit-test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run unit tests
+              run: npm run test:unit
+    package-test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Install consumer test browser
+              run: npx playwright install --with-deps chromium
+
+            - name: Test package consumer
+              run: npm run test:package
+    release-config-test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run release configuration tests
+              run: npm run test:release-config
+    e2e-test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Install playwright
+              run: npx playwright install --with-deps
+
+            - name: Run E2E tests
+              run: npm run test:e2e
+
+            - uses: actions/upload-artifact@v4
+              if: failure()
+              with:
+                  name: playwright-test-results
+                  path: test-results/
+    release:
+        name: Release (latest)
+        if: github.ref == 'refs/heads/main'
+        needs: [lint, unit-test, e2e-test, package-test, release-config-test]
+        permissions:
+            contents: write
+            pull-requests: write
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Setup Node.js environment
+              uses: actions/setup-node@v4
+              with:
+                  node-version: lts/*
+                  cache: "npm"
+                  registry-url: "https://registry.npmjs.org"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: 🚀 Create/Update Release Pull Request or Publish to npm
+              id: changesets
+              uses: changesets/action@v2.1.2
+              with:
+                  github-token: ${{ secrets.STACKS_TOOLING_GH_RW_PAT }}
+                  version-script: npm run version
+                  publish-script: npm run release
+                  pr-title: "chore(new-release)"
+                  commit-message: "chore(new-release)"
+                  pr-base-branch: main
+                  create-github-releases: true
+                  push-git-tags: true
+                  push-with-git-cli: true
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_API_KEY }}
+
+            - name: Docs on Release Pull Request
+              # run only if there is a release pull request open
+              if: steps.changesets.outputs.pr-number
+              uses: thollander/actions-comment-pull-request@v3
+              with:
+                  comment-tag: "pr-release-docs"
+                  pr-number: ${{ steps.changesets.outputs.pr-number }}
+                  message: |
+                      To trigger the build for this PR, **close and re-open it**.
+                      This is necessary because the PR is updated by github-actions[bot].
+                      This is a technical user which does not trigger actions workflows on push events.
+                      See this GH issue for more details: https://github.com/changesets/action/issues/187
+# cancel the jobs if another workflow is kicked off for the same branch
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
